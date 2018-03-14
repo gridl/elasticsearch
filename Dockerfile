@@ -8,7 +8,7 @@ RUN rm -rf /var/cache/apk/*
 ##################
 ## Install gosu ##
 ##################
-RUN curl -o /usr/local/bin/gosu -sSL "https://github.com/tianon/gosu/releases/download/1.2/gosu-arm64"
+RUN curl -o /usr/local/bin/gosu -sSL "https://github.com/tianon/gosu/releases/download/1.10/gosu-arm64"
 RUN chmod +x /usr/local/bin/gosu
 
 ###########################
