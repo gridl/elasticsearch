@@ -1,7 +1,7 @@
 FROM alpine:3.7
 
 RUN apk update
-RUN apk add --no-cache -t .build-deps wget ca-certificates gnupg openssl openjdk8-jre curl dcron bash
+RUN apk add --no-cache -t .build-deps wget ca-certificates gnupg openssl openjdk8-jre curl dcron bash su-exec
 RUN rm -rf /var/cache/apk/*
 
 

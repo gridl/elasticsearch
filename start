@@ -202,4 +202,4 @@ $DATA_PATHS/*.log {
 EOL
 
 echo "Starting Elasticsearch with the options $OPTS"
-gosu elasticsearch sh -c "$ES_HOME/bin/elasticsearch $OPTS"
+su-exec elasticsearch $ES_HOME/bin/elasticsearch $OPTS
