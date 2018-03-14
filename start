@@ -1,0 +1,205 @@
+#!/bin/sh
+ulimit -l unlimited
+ulimit -n 65536
+echo "==============================="
+echo "starting elastic search."
+echo "==============================="
+echo "-------------------------------"
+echo "checking ulimits"
+echo "-------------------------------"
+
+mapmax=`cat /proc/sys/vm/max_map_count`
+filemax=`cat /proc/sys/fs/file-max`
+
+sysctl -w vm.max_map_count=262144
+
+ulimit -a;
+
+echo "-------------------------------"
+echo "checking file limits"
+echo "-------------------------------"
+echo "fs.file_max: $filemax"
+echo "vm.max_map_count: $mapmax"
+
+
+fds=`ulimit -n`
+if [ "$fds" -lt "64000" ] ; then
+  echo "ES recommends 64k open files per process. you have "`ulimit -n`
+  echo "the docker deamon should be run with increased file descriptors to increase those available in the container"
+  echo " try \`ulimit -n 64000\`"
+else
+  echo "you have more than 64k allowed file descriptors. awesome."
+fi
+
+echo "-------------------------------"
+echo "Swap status (1 is recommended by ES)"
+echo "-------------------------------"
+echo "Swap status: $(sysctl -a|grep vm.swappiness)"
+echo "-------------------------------"
+
+#If a Data_Path is not provided, we set it to test-0
+if [ ! -n "$DATA_PATHS" ]; then
+  echo "No DATA_PATH set, setting defaults."
+  DATA_PATHS="/test-0"
+fi
+
+## General Config Stuff
+##
+
+####################
+for i in $(echo $DATA_PATHS | sed "s/,/ /g")
+do
+    echo "Checking ownership on: $i"
+    chown -R elasticsearch:elasticsearch $i
+
+    echo "Ensuring correct device size: $i"
+    resize2fs $(df $i | tail -1 | awk '{ print $1 }')
+done
+
+
+if [ -f /conf/env ]; then
+  . /conf/env
+fi
+
+if [ ! -e /conf/elasticsearch.* ]; then
+  cp $ES_HOME/config/elasticsearch.yml /conf
+  chown -R elasticsearch: /conf/elasticsearch.yml
+fi
+
+if [ ! -e /conf/log4j2.* ]; then
+  cp $ES_HOME/config/log4j2.properties /conf
+  chown -R elasticsearch: /conf/log4j2.properties
+fi
+
+if [ ! -e /conf/jvm.options ]; then
+  touch /conf/jvm.options
+  chown -R elasticsearch: /conf/jvm.options
+fi
+
+export ES_PATH_CONF='/conf'
+OPTS="-Epath.data=$DATA_PATHS \
+  -Epath.logs=$(echo $DATA_PATHS | sed "s/,/ /g" | awk '{print $1}') \
+  -Etransport.tcp.port=9300 \
+  -Ehttp.port=9200 \
+  -Ediscovery.zen.fd.ping_retries=100 \
+  -Ehttp.compression=true \
+  -Ehttp.cors.enabled=true \
+  -Ehttp.cors.allow-origin=* \
+  -Ehttp.cors.allow-credentials=true \
+  -Ehttp.cors.allow-headers=Authorization,Origin,Accept,Content-Length,Content-Type,X-Requested-With"
+
+## Elsaticsearch config section.
+## It is best to organize it this way as opposed to directly
+## editing the elasticsearch config.
+##
+## These options are passed to the container with "-e" during run.
+##
+
+## Configure a cluster name.
+if [ -n "$CLUSTER" ]; then
+  OPTS="$OPTS -Ecluster.name=$CLUSTER"
+  if [ -n "$CLUSTER_FROM" ]; then
+    if [ -d /data/$CLUSTER_FROM -a ! -d /data/$CLUSTER ]; then
+      echo "Performing cluster data migration from $CLUSTER_FROM to $CLUSTER"
+      mv /data/$CLUSTER_FROM /data/$CLUSTER
+    fi
+  fi
+fi
+
+## Configure this nodes name.
+if [ -n "$NODE_NAME" ]; then
+  OPTS="$OPTS -Enode.name=$NODE_NAME"
+fi
+
+## Network Host Options
+OPTS="$OPTS -Enetwork.host=_site_"
+
+## Configure node master eligibility
+if [ -n "$MASTER_ELIGIBLE" ]; then
+  OPTS="$OPTS -Enode.master=$MASTER_ELIGIBLE"
+fi
+
+## Configure HEAP
+if [ -n "$ES_JAVA_OPTS" ]; then
+  OPTS="$OPTS -Ebootstrap.memory_lock=true"
+fi
+#If Heap does not exist, set it to 512mb
+if [ ! -n "$ES_JAVA_OPTS" ]; then
+  echo "No heap size found, setting defaults."
+  export ES_JAVA_OPTS="-Xms512m -Xmx512m"
+fi
+## Configure max/min HEAP
+#if [ -n "$ES_MX_SIZE" ]; then
+#  OPTS="$OPTS -Xmx${ES_MX_SIZE} -Xms${ES_MS_SIZE}"
+#fi
+
+## Configure number of processors
+if [ -n "$ES_CORES" ]; then
+  OPTS="$OPTS -Eprocessors=$ES_CORES"
+fi
+
+## Set unique awareness attribute key (value not important) for use in provisioner allocation restriction
+if [ -n "$NODE_AWARENESS_ATTR" ]; then
+  OPTS="$OPTS -Enode.attr.$NODE_AWARENESS_ATTR=true"
+fi
+
+## Configure number of shards
+# Can no longer be configured through yml or command line
+# if [ -n "$INDEX_NUMBER_OF_SHARDS" ]; then
+#   OPTS="$OPTS -Eindex.number_of_shards=$INDEX_NUMBER_OF_SHARDS"
+# fi
+
+## Configure number of replicas
+# Can no longer be configured through yml or command line
+# if [ -n "$INDEX_NUMBER_OF_REPLICAS" ]; then
+#   OPTS="$OPTS -Eindex.number_of_replicas=$INDEX_NUMBER_OF_REPLICAS"
+# fi
+
+## Configure the unicast connection to form the cluster.
+## Disable multicast to prevent cross cluster formation.
+if [ -n "$UNICAST_HOSTS" ]; then
+  OPTS="$OPTS -Ediscovery.zen.ping.unicast.hosts=$UNICAST_HOSTS"
+fi
+
+## Configure the minimum number of active nodes before a cluster is formed.
+if [ -n "$MIN_MASTER_NODES" ]; then
+  OPTS="$OPTS -Ediscovery.zen.minimum_master_nodes=$MIN_MASTER_NODES"
+fi
+
+## publish as
+if [ -n "$PUBLISH_AS" ]; then
+  OPTS="$OPTS -Etransport.publish_host=$(echo $PUBLISH_AS | awk -F: '{print $1}')"
+  OPTS="$OPTS -Etransport.publish_port=$(echo $PUBLISH_AS | awk -F: '{if ($2) print $2; else print 9300}')"
+fi
+
+## Configure any optional options.
+if [ -n "$PLUGINS" ]; then
+  for p in $(echo $PLUGINS | awk -v RS=, '{print}')
+  do
+    echo "Installing the plugin $p"
+    $ES_HOME/bin/elasticsearch-plugin install -b $p
+  done
+fi
+
+## Custom configuration (exposed for use internally)
+if [ -n "$EXTRA_OPTS" ]; then
+  OPTS="$OPTS $EXTRA_OPTS"
+fi
+
+### Configure LogRotate ###
+cat >/etc/logrotate.conf <<EOL
+$DATA_PATHS/*.log {
+    daily
+    rotate 5
+    size 50M
+    copytruncate
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 644 elasticsearch elasticsearch
+}
+EOL
+
+echo "Starting Elasticsearch with the options $OPTS"
+gosu elasticsearch sh -c "$ES_HOME/bin/elasticsearch $OPTS"

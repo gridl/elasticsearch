@@ -1,0 +1,2 @@
+kill $(pgrep -f org.elasticsearch.bootstrap.Elasticsearch)
+while [ $(pgrep -f elasticsearch) ]; do COUNTER=$[$COUNTER +1]; sleep 1; echo $COUNTER; if [ $COUNTER == 60 ]; then break; fi done
